@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>VVI EPG Simulator</title>
+<style>
+body { margin:0; background:#111; color:#eee; font-family:Arial; text-align:center; }
+canvas { background:black; width:95%; height:400px; margin-top:20px; border:1px solid #333; }
+.controls { margin-top:10px; }
+input { width:200px; }
+
+.led-container { display:flex; justify-content:center; gap:40px; margin-top:10px; }
+.led { width:20px; height:20px; border-radius:50%; background:#333; }
+.green.on { background:#00ff66; box-shadow:0 0 10px #00ff66; }
+.blue.on { background:#00aaff; box-shadow:0 0 10px #00aaff; }
+</style>
+</head>
+
+<body>
+
+<h2>VVI EPG Simulator</h2>
+
+<div class="led-container">
+  <div><div id="vpace" class="led green"></div><div>VP</div></div>
+  <div><div id="vsense" class="led blue"></div><div>VS</div></div>
+</div>
+
+<canvas id="ekg" width="900" height="400"></canvas>
+
+<div class="controls">
+  <div>Lower Rate (ppm) <input type="range" id="lrl" min="30" max="120" value="60"></div>
+  <div>Intrinsic Rate (ppm) <input type="range" id="intrinsic" min="0" max="120" value="70"></div>
+  <div>Noise <input type="range" id="noise" min="0" max="5" step="0.1" value="0.5"></div>
+  <div>Sensitivity (mV) <input type="range" id="threshold" min="0.1" max="10" step="0.1" value="2"></div>
+</div>
+
+<script>
+
+const canvas = document.getElementById("ekg");
+const ctx = canvas.getContext("2d");
+
+const vpaceLED = document.getElementById("vpace");
+const vsenseLED = document.getElementById("vsense");
+
+const lrlSlider = document.getElementById("lrl");
+const intrinsicSlider = document.getElementById("intrinsic");
+const noiseSlider = document.getElementById("noise");
+const thresholdSlider = document.getElementById("threshold");
+
+let data = [];
+let markers = [];
+
+let lastEventTime = performance.now();
+let lastIntrinsicTime = performance.now();
+let lastPaceTime = -1000;
+let lastPacedDisplayTime = -1000;
+
+const PVB = 120;
+const VRP = 200;
+const pacedDuration = 140;
+const spikeDelay = 10;
+
+let prevSense = 0;
+let prev2Sense = 0;
+
+function flash(el){
+  el.classList.add("on");
+  setTimeout(()=>el.classList.remove("on"),80);
+}
+
+function intrinsicBeat(t){
+  let phase = t / 120;
+  if (phase > 1) return 0;
+  return Math.exp(-Math.pow((phase-0.1)*30,2)) * 5;
+}
+
+function pacedBeat(t){
+  let phase = t / pacedDuration;
+  if (phase > 1) return 0;
+
+  if (phase < 0.1) return 0;
+  if (phase < 0.3) return (phase-0.1)*12;
+  if (phase < 0.5) return 2.5;
+  if (phase < 0.9) return 2.5 - (phase-0.5)*4;
+
+  return 0;
+}
+
+function draw(){
+
+  let now = performance.now();
+
+  let lrl = 60000 / lrlSlider.value;
+  let intrinsicRate = intrinsicSlider.value;
+  let intrinsicInterval = intrinsicRate > 0 ? 60000 / intrinsicRate : Infinity;
+
+  let noise = (Math.random()-0.5)*noiseSlider.value;
+  let threshold = parseFloat(thresholdSlider.value);
+
+  let intrinsicSignal = 0;
+
+  // --- intrinsic timing ---
+  if (intrinsicRate > 0 && now - lastIntrinsicTime > intrinsicInterval){
+    lastIntrinsicTime = now;
+  }
+
+  intrinsicSignal = intrinsicBeat(now - lastIntrinsicTime);
+
+  // --- sensing channel ---
+  let senseSignal = intrinsicSignal + noise;
+
+  let timeSincePace = now - lastPaceTime;
+  let inBlanking = timeSincePace < PVB;
+  let inRefractory = timeSincePace < VRP;
+
+  let isPeak =
+    prevSense > prev2Sense &&
+    prevSense > senseSignal &&
+    prevSense > threshold;
+
+  let sensed = false;
+
+  if (isPeak && !inBlanking && !inRefractory){
+    sensed = true;
+    lastEventTime = now;
+    markers.push("VS");
+    flash(vsenseLED);
+  }
+
+  let paced = false;
+
+  // --- VVI pacing ---
+  if (!sensed && now - lastEventTime > lrl){
+    paced = true;
+
+    lastEventTime = now;
+    lastPaceTime = now;
+    lastPacedDisplayTime = now;
+
+    // 🔥 CRITICAL: suppress intrinsic rhythm
+    lastIntrinsicTime = now;
+
+    markers.push("VP");
+    flash(vpaceLED);
+  }
+
+  // --- display signal ---
+  let displaySignal = intrinsicSignal + noise;
+
+  let pacedTime = now - lastPacedDisplayTime;
+
+  if (pacedTime < spikeDelay){
+    displaySignal = 4;
+  }
+  else if (pacedTime < pacedDuration){
+    displaySignal = pacedBeat(pacedTime);
+  }
+
+  data.push(displaySignal);
+
+  if (data.length > canvas.width){
+    data.shift();
+    markers.shift();
+  }
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.beginPath();
+  ctx.strokeStyle="lime";
+  data.forEach((v,i)=>{
+    let y = canvas.height/2 - v*25;
+    if(i===0) ctx.moveTo(i,y);
+    else ctx.lineTo(i,y);
+  });
+  ctx.stroke();
+
+  // threshold
+  ctx.strokeStyle="red";
+  let ty = canvas.height/2 - threshold*25;
+  ctx.beginPath();
+  ctx.moveTo(0,ty);
+  ctx.lineTo(canvas.width,ty);
+  ctx.stroke();
+
+  // markers
+  markers.forEach((m,i)=>{
+    if(m==="VS"){
+      ctx.fillStyle="cyan";
+      ctx.fillText("VS", i, 20);
+    }
+    if(m==="VP"){
+      ctx.fillStyle="white";
+      ctx.fillText("VP", i, 20);
+
+      ctx.beginPath();
+      ctx.strokeStyle="white";
+      ctx.moveTo(i, canvas.height/2 - 80);
+      ctx.lineTo(i, canvas.height/2 + 80);
+      ctx.stroke();
+    }
+  });
+
+  prev2Sense = prevSense;
+  prevSense = senseSignal;
+
+  requestAnimationFrame(draw);
+}
+
+draw();
+
+</script>
+
+</body>
+</html>
