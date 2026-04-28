@@ -4,6 +4,8 @@ A browser-based VVI pacemaker teaching simulator designed to demonstrate core el
 
 This tool is intended for education, demos, and training, providing a simplified but clinically meaningful visualization of how a VVI device behaves under different conditions.
 
+https://ronaldray-gun.github.io/VVI-Pacing-Sim/
+
 ⸻
 
 Features
