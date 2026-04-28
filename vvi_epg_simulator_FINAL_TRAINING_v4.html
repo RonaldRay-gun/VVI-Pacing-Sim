@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>EPG Simulator</title>
+
+<style>
+body { background:#111; color:#eee; font-family:Arial; text-align:center; }
+
+canvas {
+  background:black;
+  width:95%;
+  height:400px;
+  margin-top:20px;
+  border:1px solid #333;
+}
+
+.led {
+  width:30px;height:30px;border-radius:50%;
+  background:#333;display:inline-block;margin:8px;
+}
+.green.on { background:#00ff66; }
+.blue.on { background:#00aaff; }
+
+.control-block { margin:30px 0; }
+
+.knob {
+  width:90px;height:90px;border-radius:50%;
+  background:radial-gradient(#555,#222);
+  border:3px solid #888;
+  margin:auto;
+  position:relative;
+  touch-action:none;
+  transition:transform 0.05s linear;
+}
+.knob::after {
+  content:'';
+  width:6px;height:35px;background:white;
+  position:absolute;top:12px;left:50%;
+  transform:translateX(-50%);
+  border-radius:2px;
+}
+
+button {
+  margin:8px;
+  padding:8px 14px;
+  background:#333;
+  color:white;
+  border:none;
+}
+
+.dropdown-content { display:none; }
+
+#hrDisplay {
+  position:absolute;
+  top:20px;
+  right:30px;
+  font-size:26px;
+  color:#0f0;
+}
+</style>
+</head>
+
+<body>
+
+<h2>VVI EPG Simulator</h2>
+
+<div id="hrDisplay">HR: --</div>
+
+<div>
+  <span><div id="vpace" class="led"></div> VP</span>
+  <span><div id="vsense" class="led"></div> VS</span>
+</div>
+
+<canvas id="ekg" width="900" height="400"></canvas>
+
+<div>
+  <button onclick="scenario1()">Scenario 1</button>
+  <button onclick="scenario2()">Scenario 2</button>
+  <button onclick="scenario3()">Scenario 3</button>
+</div>
+
+<div class="control-block">
+  <div>Lower Rate</div>
+  <div id="lrlKnob" class="knob"></div>
+  <div id="lrlValue"></div>
+</div>
+
+<div class="control-block">
+  <div>Sensitivity</div>
+  <div id="sensKnob" class="knob"></div>
+  <div id="sensValue"></div>
+</div>
+
+<div class="control-block">
+  <div>Output</div>
+  <div id="outputKnob" class="knob"></div>
+  <div id="outputValue"></div>
+</div>
+
+<button onclick="toggleMenu()">Advanced</button>
+<button id="noiseBtn" onclick="toggleNoise()">Hide Noise</button>
+<button id="sensLineBtn" onclick="toggleSensLine()">Hide Sens Line</button>
+
+<div id="menu" class="dropdown-content">
+  Intrinsic Rate <input type="range" id="intrinsic" min="0" max="120" value="70"><br>
+  Noise <input type="range" id="noise" min="0" max="5" step="0.1" value="0.5"><br>
+  Capture Threshold <input type="range" id="captureThresh" min="0" max="10" step="0.1" value="3">
+</div>
+
+<script>
+
+// ---------- CONSTANTS ----------
+const BLANKING = 100;
+const REFRACTORY = 250;
+
+// ---------- STATE ----------
+let showNoise = true;
+let showSensLine = true;
+
+// ---------- ELEMENTS ----------
+const canvas = document.getElementById("ekg");
+const ctx = canvas.getContext("2d");
+
+const vpaceLED = document.getElementById("vpace");
+const vsenseLED = document.getElementById("vsense");
+const hrDisplay = document.getElementById("hrDisplay");
+
+const intrinsicSlider = document.getElementById("intrinsic");
+const noiseSlider = document.getElementById("noise");
+const captureSlider = document.getElementById("captureThresh");
+const noiseBtn = document.getElementById("noiseBtn");
+const sensLineBtn = document.getElementById("sensLineBtn");
+
+// ---------- LED ----------
+function flash(el, color){
+  el.classList.add(color,"on");
+  setTimeout(()=>el.classList.remove("on"),80);
+}
+
+// ---------- KNOBS (FIXED ROTATION) ----------
+function setupKnob(id,label,min,max,start,unit,isInt=false){
+
+  const el = document.getElementById(id);
+  const display = document.getElementById(label);
+
+  let value = start;
+  let dragging = false;
+
+  const MIN_ANGLE = -135;
+  const MAX_ANGLE = 135;
+
+  function valueToAngle(v){
+    return MIN_ANGLE + (v - min) / (max - min) * (MAX_ANGLE - MIN_ANGLE);
+  }
+
+  function angleToValue(a){
+    let pct = (a - MIN_ANGLE) / (MAX_ANGLE - MIN_ANGLE);
+    let v = min + pct * (max - min);
+    return isInt ? Math.round(v) : v;
+  }
+
+  function update(){
+    const angle = valueToAngle(value);
+    el.style.transform = `rotate(${angle}deg)`;
+    display.innerText = (isInt ? value : value.toFixed(1)) + " " + unit;
+  }
+
+  update();
+
+  el.addEventListener("pointerdown",(e)=>{
+    dragging = true;
+    el.setPointerCapture(e.pointerId);
+  });
+
+  el.addEventListener("pointerup",(e)=>{
+    dragging = false;
+    el.releasePointerCapture(e.pointerId);
+  });
+
+  el.addEventListener("pointermove",(e)=>{
+    if(!dragging) return;
+
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width/2;
+    const cy = rect.top + rect.height/2;
+
+    let angle = Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI + 90;
+
+    if(angle > 180) angle -= 360;
+
+    angle = Math.max(MIN_ANGLE, Math.min(MAX_ANGLE, angle));
+
+    value = angleToValue(angle);
+    update();
+  });
+
+  return ()=>value;
+}
+
+const getLRL = setupKnob("lrlKnob","lrlValue",30,120,60,"bpm",true);
+const getSens = setupKnob("sensKnob","sensValue",0.1,10,2,"mV");
+const getOutput = setupKnob("outputKnob","outputValue",0,10,5,"mA",true);
+
+// ---------- UI ----------
+function toggleMenu(){
+  let m=document.getElementById("menu");
+  m.style.display=m.style.display==="block"?"none":"block";
+}
+
+function toggleNoise(){
+  showNoise=!showNoise;
+  noiseBtn.innerText=showNoise?"Hide Noise":"Show Noise";
+}
+
+function toggleSensLine(){
+  showSensLine=!showSensLine;
+  sensLineBtn.innerText=showSensLine?"Hide Sens Line":"Show Sens Line";
+}
+
+// ---------- SCENARIOS ----------
+function scenario1(){
+  intrinsicSlider.value=60;
+  noiseSlider.value=0;
+}
+
+function scenario2(){
+  intrinsicSlider.value=20;
+  noiseSlider.value=5;
+  showNoise=false;
+}
+
+function scenario3(){
+  intrinsicSlider.value=0;
+  noiseSlider.value=0;
+  captureSlider.value=8;
+}
+
+// ---------- HR ----------
+let lastBeatTime=null, currentHR=0;
+
+function registerBeat(t){
+  if(lastBeatTime !== null){
+    let interval = t - lastBeatTime;
+    if(interval < 250) return;
+    currentHR = 60000 / interval;
+  }
+  lastBeatTime = t;
+}
+
+// ---------- SIM ----------
+let data=[],spikes=[];
+let lastSense=performance.now();
+let lastIntrinsic=performance.now();
+let lastPace=0;
+
+function intrinsicBeat(t){
+  let p=t/100;
+  if(p>1)return 0;
+  if(p<0.2)return (p-0.1)*25;
+  if(p<0.5)return 4-(p-0.2)*8;
+  return 0;
+}
+
+function pacedBeat(t){
+  let p=t/180;
+  if(p>1)return 0;
+  if(p<0.3)return (p-0.1)*10;
+  if(p<0.6)return 3;
+  if(p<0.95)return 3-(p-0.6)*5;
+  return 0;
+}
+
+function draw(){
+
+  let now=performance.now();
+
+  let LRLms=60000/getLRL();
+  let intrinsicRate=parseFloat(intrinsicSlider.value);
+  let intrinsicInterval=intrinsicRate>0?60000/intrinsicRate:Infinity;
+
+  let noiseVal=parseFloat(noiseSlider.value);
+  let noiseSig=(Math.random()-0.5)*noiseVal;
+
+  let threshold=getSens();
+
+  if(now-lastIntrinsic>intrinsicInterval){
+    lastIntrinsic=now;
+    registerBeat(now);
+  }
+
+  let intrinsicSig=intrinsicBeat(now-lastIntrinsic);
+
+  let senseSignal=intrinsicSig+noiseSig;
+  let tSincePace=now-lastPace;
+
+  if(tSincePace>BLANKING && senseSignal>threshold && tSincePace>REFRACTORY){
+    lastSense=now;
+    flash(vsenseLED,"blue");
+  }
+
+  if(now-lastSense>LRLms){
+    lastSense=now;
+    lastPace=now;
+    lastIntrinsic=now;
+
+    spikes.push(data.length);
+    flash(vpaceLED,"green");
+
+    if(getOutput()>=parseFloat(captureSlider.value)){
+      registerBeat(now);
+    }
+  }
+
+  if(lastBeatTime && now-lastBeatTime>3000){
+    currentHR=0;
+    lastBeatTime=null;
+  }
+
+  let display=0;
+
+  if(now-lastPace>200){
+    display=intrinsicSig;
+  }
+
+  if(showNoise){
+    display+=noiseSig;
+  }
+
+  let t=now-lastPace;
+
+  if(getOutput()>=parseFloat(captureSlider.value) && t>10 && t<180){
+    display=pacedBeat(t);
+  }
+
+  data.push(display);
+
+  if(data.length>canvas.width){
+    data.shift();
+    spikes=spikes.map(i=>i-1).filter(i=>i>=0);
+  }
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.beginPath();
+  ctx.strokeStyle="lime";
+  data.forEach((v,i)=>{
+    let y=canvas.height/2 - v*25;
+    if(i===0) ctx.moveTo(i,y);
+    else ctx.lineTo(i,y);
+  });
+  ctx.stroke();
+
+  if(showSensLine){
+    ctx.strokeStyle="red";
+    let ty=canvas.height/2 - threshold*25;
+    ctx.beginPath();
+    ctx.moveTo(0,ty);
+    ctx.lineTo(canvas.width,ty);
+    ctx.stroke();
+  }
+
+  spikes.forEach(i=>{
+    ctx.beginPath();
+    ctx.strokeStyle="white";
+    ctx.moveTo(i,canvas.height/2-60);
+    ctx.lineTo(i,canvas.height/2+60);
+    ctx.stroke();
+  });
+
+  hrDisplay.innerText="HR: "+Math.round(currentHR||0);
+
+  requestAnimationFrame(draw);
+}
+
+draw();
+
+</script>
+</body>
+</html>
