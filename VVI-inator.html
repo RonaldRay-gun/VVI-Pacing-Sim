@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>VVI EPG Simulator</title>
+
+<style>
+body { background:#111; color:#eee; font-family:Arial; text-align:center; }
+
+canvas {
+  background:black;
+  width:95%;
+  height:400px;
+  margin-top:20px;
+  border:1px solid #333;
+}
+
+.led {
+  width:30px; height:30px; border-radius:50%;
+  background:#333; display:inline-block; margin:8px;
+}
+.green.on { background:#00ff66; }
+.blue.on { background:#00aaff; }
+
+.led-label { font-size:20px; margin:0 20px; }
+
+.knob-block { margin:20px 0; }
+
+.knob {
+  width:80px; height:80px; border-radius:50%;
+  background:radial-gradient(#555,#222);
+  border:3px solid #888;
+  margin:auto;
+  position:relative;
+  touch-action:none;
+}
+.knob::after {
+  content:'';
+  width:6px;height:30px;background:white;
+  position:absolute;top:10px;left:50%;
+  transform:translateX(-50%);
+}
+
+button {
+  margin-top:10px;
+  padding:6px 12px;
+  background:#333;
+  color:white;
+  border:none;
+  cursor:pointer;
+}
+
+.dropdown-content { display:none; }
+
+#hrDisplay {
+  position:absolute;
+  top:20px;
+  right:30px;
+  font-size:26px;
+  font-weight:bold;
+  color:#00ff66;
+}
+</style>
+</head>
+
+<body>
+
+<h2>VVI EPG Simulator</h2>
+
+<div id="hrDisplay">HR: --</div>
+
+<div>
+  <span class="led-label"><div id="vpace" class="led"></div> VP</span>
+  <span class="led-label"><div id="vsense" class="led"></div> VS</span>
+</div>
+
+<canvas id="ekg" width="900" height="400"></canvas>
+
+<!-- SCENARIOS BELOW EKG -->
+<div style="margin-top:15px; display:flex; justify-content:center; gap:15px;">
+  <button onclick="scenario1()">Scenario 1</button>
+  <button onclick="scenario2()">Scenario 2</button>
+  <button onclick="scenario3()">Scenario 3</button>
+</div>
+
+<div class="knob-block">
+  <div>Lower Rate</div>
+  <div id="lrlKnob" class="knob"></div>
+  <div id="lrlValue"></div>
+</div>
+
+<div class="knob-block">
+  <div>Sensitivity</div>
+  <div id="sensKnob" class="knob"></div>
+  <div id="sensValue"></div>
+</div>
+
+<div class="knob-block">
+  <div>Output</div>
+  <div id="outputKnob" class="knob"></div>
+  <div id="outputValue"></div>
+</div>
+
+<button onclick="toggleMenu()">Advanced</button>
+<button id="noiseBtn" onclick="toggleNoise()">Hide Noise</button>
+
+<div id="menu" class="dropdown-content">
+  Intrinsic Rate <input type="range" id="intrinsic" min="0" max="120" value="70"><br>
+  Noise <input type="range" id="noise" min="0" max="5" step="0.1" value="0.5"><br>
+  Capture Threshold <input type="range" id="captureThresh" min="0" max="10" step="0.1" value="3">
+</div>
+
+<script>
+
+// ---------- ELEMENTS ----------
+const canvas = document.getElementById("ekg");
+const ctx = canvas.getContext("2d");
+
+const vpaceLED = document.getElementById("vpace");
+const vsenseLED = document.getElementById("vsense");
+const hrDisplay = document.getElementById("hrDisplay");
+
+const intrinsicSlider = document.getElementById("intrinsic");
+const noiseSlider = document.getElementById("noise");
+const captureSlider = document.getElementById("captureThresh");
+const noiseBtn = document.getElementById("noiseBtn");
+
+// ---------- LED ----------
+function flash(el, color){
+  el.classList.add(color,"on");
+  setTimeout(()=>el.classList.remove("on"),80);
+}
+
+// ---------- KNOB ----------
+function setupKnob(id,label,min,max,start,unit,isInt=false){
+  const el=document.getElementById(id);
+  const display=document.getElementById(label);
+
+  let value=start;
+  const minA=-135,maxA=135;
+
+  function angleToValue(a){
+    let pct=(a-minA)/(maxA-minA);
+    let v=min+pct*(max-min);
+    return isInt?Math.round(v):v;
+  }
+
+  function valueToAngle(v){
+    return minA+(v-min)/(max-min)*(maxA-minA);
+  }
+
+  function update(){
+    el.style.transform=`rotate(${valueToAngle(value)}deg)`;
+    display.innerText=(isInt?value:value.toFixed(1))+" "+unit;
+  }
+
+  update();
+
+  el.addEventListener("pointerdown",(e)=>{
+    el.setPointerCapture(e.pointerId);
+
+    function move(ev){
+      const r=el.getBoundingClientRect();
+      const cx=r.left+r.width/2;
+      const cy=r.top+r.height/2;
+
+      let a=Math.atan2(ev.clientY-cy,ev.clientX-cx)*180/Math.PI+90;
+      if(a>180)a-=360;
+      a=Math.max(minA,Math.min(maxA,a));
+
+      value=angleToValue(a);
+      update();
+    }
+
+    function up(){
+      el.releasePointerCapture(e.pointerId);
+      el.removeEventListener("pointermove",move);
+      el.removeEventListener("pointerup",up);
+    }
+
+    el.addEventListener("pointermove",move);
+    el.addEventListener("pointerup",up);
+  });
+
+  return {
+    get:()=>value,
+    set:(v)=>{ value=isInt?Math.round(v):v; update(); }
+  };
+}
+
+const LRL = setupKnob("lrlKnob","lrlValue",30,120,60,"bpm",true);
+const SENS = setupKnob("sensKnob","sensValue",0.1,10,2,"mV",false);
+const OUTPUT = setupKnob("outputKnob","outputValue",0,10,5,"mA",true);
+
+// ---------- UI ----------
+function toggleMenu(){
+  const m=document.getElementById("menu");
+  m.style.display=m.style.display==="block"?"none":"block";
+}
+
+let showNoise=true;
+function toggleNoise(){
+  showNoise=!showNoise;
+  noiseBtn.innerText=showNoise?"Hide Noise":"Show Noise";
+}
+
+// ---------- SCENARIOS ----------
+function scenario1(){
+  LRL.set(80);
+  SENS.set(1.5);
+  OUTPUT.set(5);
+  intrinsicSlider.value=0;
+  noiseSlider.value=0;
+}
+
+function scenario2(){
+  LRL.set(80);
+  SENS.set(0.8);   // more sensitive
+  OUTPUT.set(5);
+  intrinsicSlider.value=20;
+  noiseSlider.value=5;   // max noise
+  showNoise=false;
+  noiseBtn.innerText="Show Noise";
+}
+
+function scenario3(){
+  LRL.set(60);
+  OUTPUT.set(0);
+  intrinsicSlider.value=0;
+  noiseSlider.value=0;
+}
+
+// ---------- SIM ----------
+let data=[],spikes=[];
+let lastSense=performance.now();
+let lastIntrinsic=performance.now();
+let lastPace=0;
+
+let prev=0,prev2=0;
+
+let lastQrsTime=performance.now();
+let currentHR=0;
+
+function intrinsicBeat(t){
+  let p=t/100;
+  if(p>1)return 0;
+  if(p<0.2)return (p-0.1)*25;
+  if(p<0.5)return 4-(p-0.2)*8;
+  return 0;
+}
+
+function pacedBeat(t){
+  let p=t/180;
+  if(p>1)return 0;
+  if(p<0.3)return (p-0.1)*10;
+  if(p<0.6)return 3;
+  if(p<0.95)return 3-(p-0.6)*5;
+  return 0;
+}
+
+function draw(){
+
+  let now=performance.now();
+
+  let LRLms=60000/LRL.get();
+  let intrinsicRate=parseFloat(intrinsicSlider.value);
+  let interval=intrinsicRate>0?60000/intrinsicRate:Infinity;
+
+  let noiseVal=parseFloat(noiseSlider.value);
+  let noiseSig=(Math.random()-0.5)*noiseVal;
+
+  let threshold=SENS.get();
+
+  if(now-lastIntrinsic>interval) lastIntrinsic=now;
+
+  let intrinsicSig=intrinsicBeat(now-lastIntrinsic);
+
+  if(now-lastPace<200) intrinsicSig=0;
+
+  let sense=intrinsicSig+noiseSig;
+
+  let isPeak=prev>prev2 && prev>sense && prev>threshold;
+
+  if(isPeak){
+  lastSense = now;
+  flash(vsenseLED,"blue");
+
+  // 🔥 Only count if TRUE intrinsic signal (not noise)
+  if(intrinsicSig > 0.5){
+    currentHR = 60000 / (now - lastQrsTime);
+    lastQrsTime = now;
+  }
+}
+
+  let output=OUTPUT.get();
+  let captureThresh=parseFloat(captureSlider.value);
+
+  if(now-lastSense>LRLms){
+    lastSense=now;
+    lastPace=now;
+    lastIntrinsic=now;
+
+    spikes.push(data.length);
+    flash(vpaceLED,"green");
+
+    if(output>=captureThresh){
+      currentHR=60000/(now-lastQrsTime);
+      lastQrsTime=now;
+    }
+  }
+
+  if(now-lastQrsTime>2000){
+    currentHR=0;
+  }
+
+  let display=intrinsicSig+(showNoise?noiseSig:0);
+
+  let t=now-lastPace;
+
+  if(output>=captureThresh && t>10 && t<180){
+    display=pacedBeat(t);
+  }
+
+  data.push(display);
+
+  if(data.length>canvas.width){
+    data.shift();
+    spikes=spikes.map(i=>i-1).filter(i=>i>=0);
+  }
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.beginPath();
+  ctx.strokeStyle="lime";
+  data.forEach((v,i)=>{
+    let y=canvas.height/2 - v*25;
+    if(i===0) ctx.moveTo(i,y);
+    else ctx.lineTo(i,y);
+  });
+  ctx.stroke();
+
+  ctx.strokeStyle="red";
+  let ty=canvas.height/2 - threshold*25;
+  ctx.beginPath();
+  ctx.moveTo(0,ty);
+  ctx.lineTo(canvas.width,ty);
+  ctx.stroke();
+
+  spikes.forEach(i=>{
+    ctx.beginPath();
+    ctx.strokeStyle="white";
+    ctx.moveTo(i,canvas.height/2-60);
+    ctx.lineTo(i,canvas.height/2+60);
+    ctx.stroke();
+  });
+
+  hrDisplay.innerText="HR: "+Math.round(currentHR||0);
+
+  prev2=prev;
+  prev=sense;
+
+  requestAnimationFrame(draw);
+}
+
+draw();
+
+</script>
+</body>
+</html>
